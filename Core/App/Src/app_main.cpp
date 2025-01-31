@@ -134,11 +134,11 @@ int tryReadMotorState(motorState *state)
 volatile uint32_t loopClock = 0;
 float angle = 0.0f;
 float angleVel = 0.0f;
-float K[] = {4.0f, 0.5f};
 float integralGain = 0.0f;
-float targetAngle = 0.0f;
-float targetSpeed = 0.0f;
+float targetSpeed = M_PI_2;
 float targetQ = 0.0f;
+
+float kP = 10.f, kI = 0.0f, kD = 10.0f;
 
 void app_main(void)
 {
@@ -275,6 +275,7 @@ void app_main(void)
 
     while (1)
     {
+        printf(">angleVel:%.2f\n",angleVel);
     }
 }
 
@@ -296,7 +297,8 @@ inline float updateLPF(float input, float prev, float Tf)
 }
 
 volatile float prevMeasuredAngle = 0.0f;
-volatile float integralError = 0.0f;
+volatile float prevAngleVel = 0.0f;
+volatile float integralAngleVel = 0.0f;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -323,22 +325,24 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         angleVel = updateLPF(deltaAngle / deltaT, angleVel, 0.3f);
         prevMeasuredAngle = _measuredAngle;
 
-        float angleError = targetAngle - angle;
         float angleVelError = targetSpeed - angleVel;
 
-        integralError += angleError * deltaT;
-        if (integralError > 0.5f)
+        integralAngleVel += angleVelError * deltaT;
+
+        const float maxIntegralAngleVel = 10.0f;
+        if (integralAngleVel > maxIntegralAngleVel)
         {
-            integralError = 0.5f;
+            integralAngleVel = maxIntegralAngleVel;
         }
-        else if (integralError < -0.5f)
+        else if (integralAngleVel < -maxIntegralAngleVel)
         {
-            integralError = -0.5f;
+            integralAngleVel = -integralAngleVel;
         }
 
-        targetQ = -(angleError * K[0] + angleVelError * K[1]) - integralError * integralGain;
+        targetQ = angleVelError * kP + integralAngleVel * kI + (prevAngleVel - angleVel) * kD;
+        prevAngleVel = angleVel;
 
-        foc.targetCurrentDQ.Q = targetQ;
+        foc.targetCurrentDQ.Q = -targetQ;
 
         foc.electricalAngle = _measuredAngle;
         driver.getCurrentAmpere(&foc.current.U, &foc.current.V, &foc.current.W);
