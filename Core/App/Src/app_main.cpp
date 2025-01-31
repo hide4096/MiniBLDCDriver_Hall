@@ -135,14 +135,16 @@ volatile uint32_t loopClock = 0;
 float angle = 0.0f;
 float angleVel = 0.0f;
 float integralGain = 0.0f;
-float targetSpeed = M_PI_2;
+volatile float targetSpeed = 0;
 float targetQ = 0.0f;
 
 float kP = 10.f, kI = 0.0f, kD = 10.0f;
 
+volatile float prevAngleVel = 0.0f;
+volatile float integralAngleVel = 0.0f;
+
 void app_main(void)
 {
-
     printf("app_main()\n");
 
     // モーター設定読み込み
@@ -268,14 +270,19 @@ void app_main(void)
     foc.reset();
     foc.setGain(0.2f, 3.0f, 0.f, 0.2f, 3.0f, 0.0f);
     foc.targetCurrentDQ.D = 0.0f;
-    foc.targetCurrentDQ.Q = 3.0f;
+    foc.targetCurrentDQ.Q = 0.0f;
 
     mode = FOC;
     // mode = OFF;
 
+    setvbuf(stdin, NULL, _IONBF, 0);
     while (1)
     {
-        printf(">angleVel:%.2f\n",angleVel);
+        // printf(">angleVel:%.2f\n",angleVel);
+        scanf("%f", &targetSpeed);
+        prevAngleVel = 0.0f;
+        integralAngleVel = 0.0f;
+        printf("%.2f", targetSpeed);
     }
 }
 
@@ -297,8 +304,6 @@ inline float updateLPF(float input, float prev, float Tf)
 }
 
 volatile float prevMeasuredAngle = 0.0f;
-volatile float prevAngleVel = 0.0f;
-volatile float integralAngleVel = 0.0f;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
