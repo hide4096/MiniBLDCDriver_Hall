@@ -1,143 +1,89 @@
 #pragma once
 
+#include "utils.hpp"
+
 class focControl
 {
 public:
-    float batteryVoltage;
-    float electricalAngle;
-
-    struct uvwVoltage
+    struct uvw
     {
         float U;
         float V;
         float W;
     };
 
-    struct uvmAmpere
-    {
-        float U;
-        float V;
-        float W;
-    };
-
-    struct PID
-    {
-        float kp;
-        float ki;
-        float kd;
-
-        float integral;
-        float prevError;
-    };
-
-    struct dqVoltage
-    {
-        float d;
-        float q;
-    };
-
-    struct dqAmpere
+    struct dq
     {
         float D;
         float Q;
     };
 
-    PID pidD, pidQ;
+    struct FOCInput
+    {
+        float electricalAngle;
+        uvw current;
+        dq targetCurrent;
+    };
 
-    uvmAmpere current;
-    dqAmpere targetCurrentDQ;
-    dqAmpere measuredCurrentDQ;
-    dqAmpere errorCurrentDQ;
+    PID pidCurrentD;
+    PID pidCurrentQ;
+    LPF lpfCurrentD;
+    LPF lpfCurrentQ;
 
-    dqVoltage output;
+    dq rawCurrent, filterdCurrent;
 
-    focControl(float deltaT, float supplyVoltage) : deltaT(deltaT), supplyVoltage(supplyVoltage) {}
+    focControl() {}
+
+    void init(float deltaT, float Tf, float supplyVoltage, int isCW)
+    {
+        this->supplyVoltage = supplyVoltage;
+        this->isCW = isCW;
+        pidCurrentD.init(deltaT);
+        pidCurrentQ.init(deltaT);
+        lpfCurrentD.init(Tf, deltaT);
+        lpfCurrentQ.init(Tf, deltaT);
+    }
 
     void reset()
     {
-        pidD.integral = pidQ.integral = 0.f;
-        pidD.prevError = pidQ.prevError = 0.f;
+        filterdCurrent.D = 0.0f;
+        filterdCurrent.Q = 0.0f;
+        pidCurrentD.reset();
+        pidCurrentQ.reset();
     }
 
-    void setGain(float kp_d, float ki_d, float kd_d, float kp_q, float ki_q, float kd_q)
+    uvw loop(FOCInput *input)
     {
-        pidD.kp = kp_d;
-        pidD.ki = ki_d;
-        pidD.kd = kd_d;
-
-        pidQ.kp = kp_q;
-        pidQ.ki = ki_q;
-        pidQ.kd = kd_q;
-
-        reset();
-    }
-
-    inline float updateLPF(float input, float prev)
-    {
-        float alpha = Tf / (Tf + deltaT);
-        return alpha * prev + (1.0f - alpha) * input;
-    }
-
-    inline float constrain(float value, float min, float max)
-    {
-        if (value < min)
-            return min;
-        if (value > max)
-            return max;
-        return value;
-    }
-
-    void loop(float *u, float *v, float *w)
-    {
-        float sinE = sinf(electricalAngle);
-        float cosE = cosf(electricalAngle);
+        float sinAngle = sinf(input->electricalAngle);
+        float cosAngle = cosf(input->electricalAngle);
 
         // 逆クラーク変換
-        float _mid = (current.U + current.V + current.W) / 3.f;
-        float _currentA = current.U - _mid;
-        float _currentB = current.V - _mid;
-
-        float currAlpha = _currentA;
-        float currBeta = _currentA * _1_SQRT3 + _currentB * _2_SQRT3;
+        float currentAlpha = (2.0f / 3.0f) * (input->current.U - 0.5f * input->current.V - 0.5f * input->current.W);
+        float currentBeta = (2.0f / 3.0f) * (SQRT3_2 * (input->current.V - input->current.W));
 
         // パーク変換
-        dqAmpere _rawCurrentDQ;
-        _rawCurrentDQ.D = currAlpha * cosE + currBeta * sinE;
-        _rawCurrentDQ.Q = -currAlpha * sinE + currBeta * cosE;
-        measuredCurrentDQ.D = updateLPF(_rawCurrentDQ.D, prevCurrentDQ.D);
-        measuredCurrentDQ.Q = updateLPF(_rawCurrentDQ.Q, prevCurrentDQ.Q);
+        rawCurrent.D = currentAlpha * cosAngle + currentBeta * sinAngle;
+        rawCurrent.Q = -currentAlpha * sinAngle + currentBeta * cosAngle;
 
-        prevCurrentDQ = measuredCurrentDQ;
+        filterdCurrent.D = lpfCurrentD.update(rawCurrent.D, filterdCurrent.D);
+        filterdCurrent.Q = lpfCurrentQ.update(rawCurrent.Q, filterdCurrent.Q);
 
-        errorCurrentDQ.D = measuredCurrentDQ.D - targetCurrentDQ.D;
-        errorCurrentDQ.Q = measuredCurrentDQ.Q - targetCurrentDQ.Q;
-
-        pidD.integral += errorCurrentDQ.D * deltaT;
-        pidQ.integral += errorCurrentDQ.Q * deltaT;
-
-        float _limit = 10.0f;
-        pidD.integral = constrain(pidD.integral, -_limit, _limit);
-        pidQ.integral = constrain(pidQ.integral, -_limit, _limit);
-
-        output.d = pidD.kp * errorCurrentDQ.D + pidD.ki * pidD.integral + pidD.kd * (errorCurrentDQ.D - pidD.prevError) / deltaT;
-        output.q = pidQ.kp * errorCurrentDQ.Q + pidQ.ki * pidQ.integral + pidQ.kd * (errorCurrentDQ.Q - pidQ.prevError) / deltaT;
-
-        pidD.prevError = errorCurrentDQ.D;
-        pidQ.prevError = errorCurrentDQ.Q;
+        dq outputCurrent = {
+            pidCurrentD.update(input->targetCurrent.D * isCW - filterdCurrent.D),
+            pidCurrentQ.update(input->targetCurrent.Q * isCW - filterdCurrent.Q)};
 
         // 逆パーク変換
-        float alpha = output.d * cosE - output.q * sinE;
-        float beta = output.d * sinE + output.q * cosE;
+        float alpha = outputCurrent.D * cosAngle - outputCurrent.Q * sinAngle;
+        float beta = outputCurrent.D * sinAngle + outputCurrent.Q * cosAngle;
 
         // クラーク変換
-        *u = constrain(alpha, -_limit, _limit);
-        *v = constrain(-0.5f * alpha + SQRT3_2 * beta, -_limit, _limit);
-        *w = constrain(-0.5f * alpha - SQRT3_2 * beta, -_limit, _limit);
-    }
+        float _voltageLimit = supplyVoltage / 8.0f;
+        uvw outputVoltage{
+            constrain(alpha, _voltageLimit),
+            constrain(-0.5f * alpha + SQRT3_2 * beta, _voltageLimit),
+            constrain(-0.5f * alpha - SQRT3_2 * beta, _voltageLimit)};
 
-    float min3(float a, float b, float c)
-    {
-        return _min(a, _min(b, c));
+        return outputVoltage;
     }
 
 private:
@@ -146,20 +92,6 @@ private:
     const float _2_SQRT3 = 1.15470053838f;
     const float _1_SQRT3 = 0.57735026919f;
 
-    float deltaT = 1.f;
     float supplyVoltage = 1.0f;
-    float Tf = 0.001f;
-    dqAmpere prevCurrentDQ = {0.f, 0.f};
-
-    float _min(float a, float b)
-    {
-        return a < b ? a : b;
-    }
-
-    float _max(float a, float b)
-    {
-        return a > b ? a : b;
-    }
-
-    float prevErrorD = 0.f, prevErrorQ = 0.f;
+    int isCW = 1;
 };
